@@ -1,20 +1,20 @@
-# render.yaml (para el servicio backend-render-videos)
-
+# render.yaml
+# Para desplegar en Render.com usando Render Blueprints
 services:
   - type: web
-    name: backend-render-videos # Asegúrate que el nombre coincida con tu servicio
+    name: video-json-backend
     env: python
-    plan: free # El plan gratuito puede ser lento para renderizar. Considera un plan de pago si es necesario.
-    
-    # NUEVO: Usar el script de construcción para instalar ffmpeg y las dependencias de Python
-    buildCommand: "./build.sh"
-    startCommand: "gunicorn app:app --timeout 120" # Aumentar el timeout para Gunicorn
-
-    # Las mismas variables de entorno que el otro backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
-      - key: GCS_BUCKET_NAME
-        sync: false
-      - key: GCS_CREDENTIALS_JSON
-        sync: false
       - key: PYTHON_VERSION
-        value: 3.11.4
+        value: 3.9.19 # O la versión de Python que prefieras y que Render soporte
+      - key: FLASK_ENV
+        value: production
+      # Aquí debes añadir tu clave de API de Google AI si usas Gemini/Vertex AI
+      # - key: GOOGLE_API_KEY
+      #   value: tu_api_key_aqui # ¡IMPORTANTE: Configura esto en Render de forma segura!
+    healthCheckPath: /
+    # Puedes ajustar el plan y instanceCount según tus necesidades
+    # plan: free
+    # instanceCount: 1

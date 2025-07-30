@@ -1,10 +1,11 @@
-# requirements.txt (para el servicio backend-render-videos)
-
+# requirements.txt
 Flask==3.0.3
-Flask-Cors==4.0.1
-requests==2.32.3
 gunicorn==22.0.0
-python-dotenv==1.0.1
-google-cloud-storage==2.16.0
-werkzeug==3.0.3
-moviepy==1.0.3
+# Para la integración con la IA de Google (ej. Gemini API)
+google-generativeai==0.6.0 
+# O si usas Vertex AI:
+# google-cloud-aiplatform
+# Y si necesitas procesar datos para la IA:
+# requests
+# numpy
+# pandas

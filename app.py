@@ -1,198 +1,203 @@
-# app.py (para el servicio backend-render-videos)
-
-import os
-import requests
-import uuid
-import threading
-import time
+# app.py
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
-from google.cloud import storage
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
-from moviepy.config import change_settings
+import os # Para acceder a variables de entorno como la clave de API
 
-# --- CONFIGURACIÓN ---
-# Descomenta la siguiente línea si necesitas especificar la ruta a ImageMagick en Render
-# change_settings({"IMAGEMAGICK_BINARY": "/usr/bin/convert"})
-
-load_dotenv()
 app = Flask(__name__)
-CORS(app)
 
-# --- Configuración de Google Cloud Storage (igual que en el otro backend) ---
-GCS_BUCKET_NAME = os.getenv('GCS_BUCKET_NAME')
-GCS_CREDENTIALS_JSON = os.getenv('GCS_CREDENTIALS_JSON')
-storage_client = None
-
-if GCS_CREDENTIALS_JSON:
-    try:
-        storage_client = storage.Client.from_service_account_info(eval(GCS_CREDENTIALS_JSON))
-        print("Cliente de Google Cloud Storage inicializado correctamente.")
-    except Exception as e:
-        print(f"Error al inicializar el cliente de GCS: {e}")
-else:
-    print("Advertencia: Las credenciales de GCS no están configuradas.")
-
-# Diccionario en memoria para rastrear el estado de los trabajos de renderizado
-jobs = {}
-
-# --- FUNCIONES AUXILIARES ---
-
-def download_file(url, local_path):
-    """Descarga un archivo desde una URL a una ruta local."""
-    try:
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(local_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        return local_path
-    except requests.exceptions.RequestException as e:
-        print(f"Error descargando {url}: {e}")
-        return None
-
-def upload_to_gcs(local_path, gcs_filename):
-    """Sube un archivo local a Google Cloud Storage y lo hace público."""
-    if not storage_client or not GCS_BUCKET_NAME:
-        raise Exception("GCS no está configurado para subir el archivo final.")
-    
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-    blob = bucket.blob(gcs_filename)
-    
-    # Determinar content type para el video
-    content_type = 'video/mp4'
-    
-    blob.upload_from_filename(local_path, content_type=content_type)
-    blob.make_public()
-    return blob.public_url
-
-def process_video(job_id, scenes, render_settings):
+# --- Función para la lógica de IA y generación de JSON ---
+def apply_ai_video_editing_logic(frontend_data: dict) -> dict:
     """
-    Función principal de renderizado. Se ejecuta en un hilo separado.
+    Esta función procesa los datos de la interfaz y genera el JSON final
+    para la edición de video, integrando la lógica de IA.
+
+    Aquí es donde integrarías las llamadas a las APIs de Google AI.
     """
-    tmp_dir = f"/tmp/{job_id}"
-    os.makedirs(tmp_dir, exist_ok=True)
-    
-    try:
-        jobs[job_id]['status'] = 'processing'
-        jobs[job_id]['progress'] = 5
-        
-        # 1. Descargar todos los recursos
-        print(f"[{job_id}] Descargando recursos...")
-        local_paths = []
-        for i, scene in enumerate(scenes):
-            progress = 5 + int(30 * (i + 1) / len(scenes))
-            jobs[job_id]['progress'] = progress
+    output_json = {
+        "project_settings": {
+            "duration_seconds": frontend_data.get("video_duration", 60),
+            "language": frontend_data.get("language", "es"),
+            "niche": frontend_data.get("niche", "General"),
+            "resolution": frontend_data.get("resolution", "1080p"),
+            "input_type": frontend_data.get("input_type", "script"),
+            "ai_enhancements_enabled": frontend_data.get("ai_enhancements", False)
+        },
+        "media_assets": [],
+        "audio_tracks": {
+            "voiceover": [],
+            "background_music": {},
+            "sound_effects": []
+        },
+        "timeline": []
+    }
 
-            # Descargar imagen/video de la escena
-            media_url = scene.get('imageUrl')
-            if not media_url: continue
-            
-            ext = os.path.splitext(media_url.split('?')[0])[-1] or '.jpg'
-            local_media_path = os.path.join(tmp_dir, f"scene_{i}{ext}")
-            download_file(media_url, local_media_path)
-            
-            # Descargar audio de la escena (si existe)
-            audio_url = scene.get('audioUrl')
-            local_audio_path = None
-            if audio_url:
-                local_audio_path = os.path.join(tmp_dir, f"audio_{i}.mp3")
-                download_file(audio_url, local_audio_path)
+    current_time = 0.0
+    asset_id_counter = 1
+    voiceover_id_counter = 1
+    sfx_id_counter = 1
 
-            local_paths.append({'media': local_media_path, 'audio': local_audio_path, 'duration': 5}) # Duración fija por ahora
+    # --- EJEMPLO DE INTEGRACIÓN CON IA DE GOOGLE (Gemini API) ---
+    # Para usar esto, necesitarías:
+    # 1. Instalar la librería: pip install google-generativeai
+    # 2. Configurar tu API_KEY (por ejemplo, como variable de entorno en Render)
+    # import google.generativeai as genai
+    # GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    # if GOOGLE_API_KEY:
+    #     genai.configure(api_key=GOOGLE_API_KEY)
+    #     model = genai.GenerativeModel('gemini-pro')
+    #
+    #     # Ejemplo: Usar IA para refinar un script o generar ideas
+    #     # response = model.generate_content(f"Refina este script para un video corto: {frontend_data.get('input_topic', frontend_data.get('input_script'))}")
+    #     # refined_script = response.text
+    # else:
+    #     # print("GOOGLE_API_KEY no configurada. La funcionalidad de IA de Google estará limitada.")
+    #     pass
+    # --- FIN EJEMPLO DE INTEGRACIÓN ---
 
-        jobs[job_id]['progress'] = 35
-
-        # 2. Crear clips de video con MoviePy
-        print(f"[{job_id}] Creando clips de video...")
-        video_clips = []
-        for i, paths in enumerate(local_paths):
-            progress = 35 + int(40 * (i + 1) / len(local_paths))
-            jobs[job_id]['progress'] = progress
-
-            # Crear clip de imagen y establecer su duración
-            clip = ImageClip(paths['media']).set_duration(paths['duration'])
-            
-            # Añadir audio si existe
-            if paths['audio']:
-                audio_clip = AudioFileClip(paths['audio'])
-                clip = clip.set_audio(audio_clip)
-
-            # TODO: Añadir subtítulos y animaciones aquí si es necesario
-            
-            video_clips.append(clip)
-        
-        jobs[job_id]['progress'] = 75
-
-        # 3. Concatenar clips
-        final_clip = concatenate_videoclips(video_clips, method="compose")
-        
-        # TODO: Añadir música de fondo aquí
-        
-        # 4. Escribir el video final a un archivo
-        print(f"[{job_id}] Escribiendo video final...")
-        jobs[job_id]['progress'] = 85
-        final_video_path = os.path.join(tmp_dir, "final_video.mp4")
-        final_clip.write_videofile(final_video_path, codec="libx264", audio_codec="aac", fps=24)
-        
-        jobs[job_id]['progress'] = 95
-        
-        # 5. Subir el video final a GCS
-        print(f"[{job_id}] Subiendo video a GCS...")
-        public_url = upload_to_gcs(final_video_path, f"videos/{job_id}.mp4")
-        
-        # 6. Actualizar estado del trabajo a completado
-        jobs[job_id].update({
-            "status": "completed",
-            "progress": 100,
-            "videoUrl": public_url
+    # Procesar pistas de fondo
+    background_music_url = frontend_data.get("background_music_url")
+    background_music_volume = frontend_data.get("background_music_volume", 0.5)
+    if background_music_url:
+        bg_music_asset_id = f"bg_music_{asset_id_counter}"
+        output_json["media_assets"].append({
+            "id": bg_music_asset_id,
+            "type": "audio",
+            "url": background_music_url
         })
-        print(f"[{job_id}] ¡Renderizado completado!")
+        output_json["audio_tracks"]["background_music"] = {
+            "asset_id": bg_music_asset_id,
+            "url": background_music_url,
+            "volume": background_music_volume
+        }
+        asset_id_counter += 1
 
+    # Procesar efectos de sonido globales
+    for sfx_data in frontend_data.get("sound_effects", []):
+        sfx_url = sfx_data.get("url")
+        sfx_volume = sfx_data.get("volume", 1.0)
+        sfx_description = sfx_data.get("description", "")
+        sfx_start_time = sfx_data.get("start_time", 0.0)
+
+        if sfx_url:
+            sfx_asset_id = f"sfx_{sfx_id_counter}"
+            output_json["media_assets"].append({
+                "id": sfx_asset_id,
+                "type": "audio",
+                "url": sfx_url
+            })
+            output_json["audio_tracks"]["sound_effects"].append({
+                "asset_id": sfx_asset_id,
+                "url": sfx_url,
+                "description": sfx_description,
+                "volume": sfx_volume,
+                "start_time_seconds": sfx_start_time
+            })
+            sfx_id_counter += 1
+
+    # Procesar escenas
+    for i, scene_data in enumerate(frontend_data.get("scenes", [])):
+        scene_id = f"scene_{i+1}"
+        scene_script = scene_data.get("script", "")
+        scene_duration = scene_data.get("duration", 5.0)
+        transition_type = scene_data.get("transition_type", "cut")
+        transition_duration = scene_data.get("transition_duration", 0.5)
+
+        visual_elements = []
+        audio_elements = []
+
+        # Procesar medios visuales de la escena
+        for media_item in scene_data.get("media", []):
+            media_url = media_item.get("url")
+            media_type = media_item.get("type", "image")
+            
+            if media_url:
+                media_asset_id = f"media_{asset_id_counter}"
+                output_json["media_assets"].append({
+                    "id": media_asset_id,
+                    "type": media_type,
+                    "url": media_url
+                })
+                visual_elements.append({
+                    "asset_id": media_asset_id,
+                    "type": "main_clip",
+                    "start_time_in_scene": 0.0,
+                    "duration_in_scene": scene_duration,
+                    "effect": "none"
+                })
+                asset_id_counter += 1
+
+        # Procesar audios de la escena (voiceover)
+        voiceover_url = scene_data.get("audio_url")
+        voiceover_volume = scene_data.get("audio_volume", 1.0)
+        if voiceover_url:
+            vo_asset_id = f"vo_{voiceover_id_counter}"
+            output_json["media_assets"].append({
+                "id": vo_asset_id,
+                "type": "audio",
+                "url": voiceover_url
+            })
+            output_json["audio_tracks"]["voiceover"].append({
+                "id": vo_asset_id,
+                "text_segment": scene_script,
+                "url": voiceover_url,
+                "start_time_seconds": current_time,
+                "duration_seconds": scene_duration
+            })
+            audio_elements.append({
+                "asset_id": vo_asset_id,
+                "type": "voiceover",
+                "start_time_in_scene": 0.0,
+                "volume": voiceover_volume
+            })
+            voiceover_id_counter += 1
+
+        # Añadir la escena al timeline
+        output_json["timeline"].append({
+            "type": "scene",
+            "id": scene_id,
+            "start_time_seconds": current_time,
+            "duration_seconds": scene_duration,
+            "script": scene_script,
+            "visual_elements": visual_elements,
+            "audio_elements": audio_elements,
+            "transition_to_next_scene": {
+                "type": transition_type,
+                "duration_seconds": transition_duration
+            }
+        })
+        current_time += scene_duration
+
+    return output_json
+
+@app.route('/generate-video-json', methods=['POST'])
+def generate_video_json():
+    """
+    Endpoint para recibir los datos de la interfaz
+    y generar el JSON de instrucciones de video.
+    """
+    if not request.is_json:
+        return jsonify({"error": "Content-Type must be application/json"}), 400
+
+    frontend_data = request.get_json()
+
+    try:
+        video_instructions_json = apply_ai_video_editing_logic(frontend_data)
+        
+        # Opcional: Para forzar la descarga en el navegador, podrías añadir headers
+        # from flask import make_response
+        # response = make_response(jsonify(video_instructions_json))
+        # response.headers["Content-Disposition"] = "attachment; filename=video_instructions.json"
+        # response.headers["Content-Type"] = "application/json"
+        # return response
+
+        return jsonify(video_instructions_json), 200
     except Exception as e:
-        print(f"[{job_id}] Error durante el renderizado: {e}")
-        jobs[job_id].update({"status": "error", "error": str(e)})
-    finally:
-        # 7. Limpiar archivos temporales
-        if os.path.exists(tmp_dir):
-            for root, dirs, files in os.walk(tmp_dir, topdown=False):
-                for name in files: os.remove(os.path.join(root, name))
-                for name in dirs: os.rmdir(os.path.join(root, name))
-            os.rmdir(tmp_dir)
-
-# --- ENDPOINTS DE LA API ---
+        print(f"Error processing request: {e}")
+        return jsonify({"error": "Error interno al generar las instrucciones de video."}), 500
 
 @app.route('/')
 def home():
-    return "Backend de Renderizado para Videos IA está activo."
-
-@app.route('/api/render-video', methods=['POST'])
-def render_video_endpoint():
-    """Inicia un nuevo trabajo de renderizado en segundo plano."""
-    data = request.get_json()
-    if not data or 'scenes' not in data:
-        return jsonify({"error": "Datos de escenas no proporcionados."}), 400
-
-    job_id = str(uuid.uuid4())
-    jobs[job_id] = {"status": "pending", "progress": 0}
-    
-    # Iniciar el proceso de renderizado en un hilo separado
-    render_thread = threading.Thread(
-        target=process_video,
-        args=(job_id, data['scenes'], data.get('renderSettings', {}))
-    )
-    render_thread.start()
-    
-    return jsonify({"message": "Trabajo de renderizado iniciado.", "jobId": job_id}), 202
-
-@app.route('/api/job-status/<job_id>', methods=['GET'])
-def get_job_status(job_id):
-    """Devuelve el estado actual de un trabajo de renderizado."""
-    job = jobs.get(job_id)
-    if not job:
-        return jsonify({"error": "Trabajo no encontrado."}), 404
-    return jsonify(job)
+    return "Backend de generación de JSON de video operativo."
 
 if __name__ == '__main__':
-    app.run(port=5002, debug=True)
+    # Usar host='0.0.0.0' es necesario para que sea accesible en Render
+    app.run(debug=False, host='0.0.0.0', port=os.getenv('PORT', 5000)) # Usa el puerto de Render si está disponible
